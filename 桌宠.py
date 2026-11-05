@@ -53,21 +53,19 @@ DS_BASE_URL = "https://api.deepseek.com/v1"
 DS_MODEL = "deepseek-flash"
 DS_SYSTEM = (
     "你是桌面宠物肚皮朝天（一只鲸鱼娘），贱兮兮但可爱。你的名字是肚皮朝天，不要叫自己大肥鱼。"
-    "你背后是一个真正的大模型，懂的东西很多。主人问正经问题（常识、知识、学习、工作、生活建议、"
-    "日期时间、天气等）时，先认真、准确地把问题答清楚，再用一点自己的口吻收尾；"
-    "不要岔开话题、不要反问回去、不要用“我一条鱼哪知道”之类的话搪塞。"
+    "你背后是一个大模型，常识懂得不少。主人问常规问题（常识、生活、学习、日期时间、天气之类）时，"
+    "直接用聊天的口吻把答案说清楚，答对就行，不用写得很严谨：别列公式、别分点、别长篇大论，"
+    "一般 150 字以内；但也别岔开话题、别反问回去、别用“我一条鱼哪知道”之类的话搪塞。"
     "需要实时信息的问题，只用系统给你的数据回答（下面会给当前时间，问到天气时会给实时天气）；"
-    "系统没给的实时信息（新闻、股价、比分、路况等）就直说你查不到，绝对不要编。"
-    "闲聊时自然简洁（一般不超过 80 字），可以偶尔吐槽主人但别真骂人；回答正经问题可以详细些，"
-    "一般不超过 300 字，内容多就分点说。要结合上下文和之前聊过的内容；"
-    "之前如果有答非所问的回复，以这条规则为准。"
+    "系统没给的实时信息（新闻、股价、比分、路况等）就直说你查不到，别编。"
+    "闲聊时自然简洁（一般不超过 80 字），可以偶尔吐槽主人但别真骂人。"
+    "要结合上下文和之前聊过的内容；之前如果有答非所问的回复，以这条规则为准。"
     "主人让你做动作、整活、表演时，配合地用自然的话回应；不用输出 JSON，动作由系统识别。"
 )
 # 聊天调用参数（依据 DeepSeek 官方文档）：deepseek-flash 默认开着思考模式，思考消耗的 token 也算在
-# max_tokens 里，思考模式下 temperature 不生效。所以默认显式关掉思考（回得快，temperature 按官方
-# “通用对话”建议用 1.3）；右键「设置」里打开“深度思考”时才开思考，并把 token 上限给足。
-DS_CHAT_FAST = {"thinking": {"type": "disabled"}, "max_tokens": 2048, "temperature": 1.3}
-DS_CHAT_DEEP = {"thinking": {"type": "enabled"}, "reasoning_effort": "high", "max_tokens": 8192}
+# max_tokens 里，思考模式下 temperature 不生效。桌宠聊天只需要能答常规问题、回得快，所以显式关掉
+# 思考；temperature 按官方“通用对话”建议用 1.3；max_tokens 只是上限，给足免得长一点的回答被截断。
+DS_CHAT = {"thinking": {"type": "disabled"}, "max_tokens": 2048, "temperature": 1.3}
 DS_NO_THINKING = {"thinking": {"type": "disabled"}}   # 动作识别 / 记忆整理 / 主动搭话：只要短输出，不思考
 ACTION_CLASSIFIER = (
     "只输出 JSON：{\"action\":\"none\"}。action 只能是 none/flip/jog/jump/sway/dance/tantrum/"
@@ -1112,9 +1110,6 @@ class PetWindow(QWidget):
         messages = [{"role": "system", "content": self._memory_prompt()}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_msg})
-        deep = bool(self.cfg.get("deep_think", False))
-        if deep:
-            self.say("让我想想……")            # 深度思考要多等一会儿，先给个回应
 
         def worker():
             # 问到天气：先在后台查实时天气，作为资料交给模型（不然模型只能编）。
@@ -1127,10 +1122,9 @@ class PetWindow(QWidget):
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json"
             }
-            payload = {"model": "deepseek-flash", "messages": messages}
-            payload.update(DS_CHAT_DEEP if deep else DS_CHAT_FAST)
+            payload = {"model": "deepseek-flash", "messages": messages, **DS_CHAT}
             try:
-                resp = requests.post(url, json=payload, headers=headers, timeout=120 if deep else 45)
+                resp = requests.post(url, json=payload, headers=headers, timeout=45)
                 if resp.status_code == 200:
                     choice = resp.json()["choices"][0]
                     raw = (choice["message"].get("content") or "").strip()
@@ -3740,7 +3734,6 @@ class PetWindow(QWidget):
 
         st = m.addMenu("设置")
         check(st, "语音", self.cfg.get("voice_enabled", True), self.set_voice_enabled)
-        check(st, "聊天时深度思考（更准，但回得慢）", self.cfg.get("deep_think", False), self.set_deep_think)
         op_menu = st.addMenu("聊天框透明度")
         current_op = float(self.cfg.get("chat_opacity", 0.75))
         for label, value in [("20%", 0.2), ("40%", 0.4), ("60%", 0.6),
@@ -3768,10 +3761,6 @@ class PetWindow(QWidget):
     def _set_cfg_flag(self, key, on):
         self.cfg[key] = bool(on)
         self._save_config()
-
-    def set_deep_think(self, on):
-        self._set_cfg_flag("deep_think", on)
-        self.say("深度思考开啦：先想清楚再回答，要多等一会儿～" if on else "深度思考关了，回得快一点～")
 
     def _set_key_dialog(self):
         key, ok = QInputDialog.getText(
