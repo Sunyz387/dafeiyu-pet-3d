@@ -18,7 +18,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 def load_config():
     try:
@@ -52,10 +52,23 @@ import games
 DS_BASE_URL = "https://api.deepseek.com/v1"
 DS_MODEL = "deepseek-flash"
 DS_SYSTEM = (
-    "你是桌面宠物肚皮朝天，贱兮兮但可爱。你的名字是肚皮朝天，不要叫自己大肥鱼。"
-    "回答自然简洁（尽量不超过60字），要结合上下文和之前聊过的内容，偶尔吐槽主人但别真骂人。"
+    "你是桌面宠物肚皮朝天（一只鲸鱼娘），贱兮兮但可爱。你的名字是肚皮朝天，不要叫自己大肥鱼。"
+    "你背后是一个真正的大模型，懂的东西很多。主人问正经问题（常识、知识、学习、工作、生活建议、"
+    "日期时间、天气等）时，先认真、准确地把问题答清楚，再用一点自己的口吻收尾；"
+    "不要岔开话题、不要反问回去、不要用“我一条鱼哪知道”之类的话搪塞。"
+    "需要实时信息的问题，只用系统给你的数据回答（下面会给当前时间，问到天气时会给实时天气）；"
+    "系统没给的实时信息（新闻、股价、比分、路况等）就直说你查不到，绝对不要编。"
+    "闲聊时自然简洁（一般不超过 80 字），可以偶尔吐槽主人但别真骂人；回答正经问题可以详细些，"
+    "一般不超过 300 字，内容多就分点说。要结合上下文和之前聊过的内容；"
+    "之前如果有答非所问的回复，以这条规则为准。"
     "主人让你做动作、整活、表演时，配合地用自然的话回应；不用输出 JSON，动作由系统识别。"
 )
+# 聊天调用参数（依据 DeepSeek 官方文档）：deepseek-flash 默认开着思考模式，思考消耗的 token 也算在
+# max_tokens 里，思考模式下 temperature 不生效。所以默认显式关掉思考（回得快，temperature 按官方
+# “通用对话”建议用 1.3）；右键「设置」里打开“深度思考”时才开思考，并把 token 上限给足。
+DS_CHAT_FAST = {"thinking": {"type": "disabled"}, "max_tokens": 2048, "temperature": 1.3}
+DS_CHAT_DEEP = {"thinking": {"type": "enabled"}, "reasoning_effort": "high", "max_tokens": 8192}
+DS_NO_THINKING = {"thinking": {"type": "disabled"}}   # 动作识别 / 记忆整理 / 主动搭话：只要短输出，不思考
 ACTION_CLASSIFIER = (
     "只输出 JSON：{\"action\":\"none\"}。action 只能是 none/flip/jog/jump/sway/dance/tantrum/"
     "stretch/eat/come/back/stop/cute/sexy。翻跟斗=flip，小跑=jog，跳=jump，摇/晃=sway，"
@@ -259,6 +272,64 @@ def looks_like_action_request(text):
     """本地粗筛：句子里有没有可能是让她做动作的词。"""
     t = str(text or "")
     return any(h in t for h in ACTION_HINTS)
+
+
+# ===== 天气（wttr.in：不用 Key，中文地名也能定位，如“黔西南”→ 贵州兴义一带）=====
+# wttr.in 的天气描述是英文，按它的天气代码对照成中文
+WEATHER_ZH = {
+    "113": "晴", "116": "多云", "119": "阴", "122": "阴", "143": "有雾", "176": "局部零星小雨",
+    "179": "局部零星小雪", "182": "局部雨夹雪", "185": "局部冻毛毛雨", "200": "可能有雷阵雨",
+    "227": "风吹雪", "230": "暴风雪", "248": "雾", "260": "冻雾", "263": "零星毛毛雨",
+    "266": "毛毛雨", "281": "冻毛毛雨", "284": "强冻毛毛雨", "293": "零星小雨", "296": "小雨",
+    "299": "时有中雨", "302": "中雨", "305": "时有大雨", "308": "大雨", "311": "小冻雨",
+    "314": "冻雨", "317": "小雨夹雪", "320": "雨夹雪", "323": "零星小雪", "326": "小雪",
+    "329": "局部中雪", "332": "中雪", "335": "局部大雪", "338": "大雪", "350": "冰粒",
+    "353": "小阵雨", "356": "阵雨", "359": "暴雨", "362": "小阵雨夹雪", "365": "阵雨夹雪",
+    "368": "小阵雪", "371": "阵雪", "374": "小冰粒", "377": "冰粒", "386": "雷阵雨",
+    "389": "强雷阵雨", "392": "雷阵雪", "395": "强雷阵雪",
+}
+WEATHER_WORDS = ("天气", "气温", "下雨", "下雪", "带伞", "几度", "冷不冷", "热不热", "降温",
+                 "升温", "台风", "刮风", "大风", "雾霾", "穿什么", "穿多少", "加衣服")
+
+
+def looks_like_weather_question(text):
+    t = str(text or "")
+    return any(w in t for w in WEATHER_WORDS)
+
+
+def _weather_desc(item):
+    code = str(item.get("weatherCode", ""))
+    raw = str((item.get("weatherDesc") or [{}])[0].get("value", "")).strip()
+    return WEATHER_ZH.get(code) or raw
+
+
+def fetch_weather(city, timeout=10):
+    """查 wttr.in：现在的天气 + 今明两天概况。网络不通、服务出错会抛异常。"""
+    r = requests.get(f"https://wttr.in/{city}?format=j1", timeout=timeout,
+                     headers={"User-Agent": "Mozilla/5.0"})
+    r.raise_for_status()
+    j = r.json()
+    c = j["current_condition"][0]
+    days = []
+    for d in j.get("weather", [])[:2]:
+        hourly = d.get("hourly", [])
+        daytime = [h for h in hourly if 900 <= int(h.get("time", 0) or 0) <= 1800] or hourly
+        descs = [_weather_desc(h) for h in daytime]
+        days.append({
+            "min": d.get("mintempC"), "max": d.get("maxtempC"),
+            "desc": max(set(descs), key=descs.count) if descs else "",
+            "rain": max((int(h.get("chanceofrain", 0) or 0) for h in hourly), default=0),
+        })
+    return {"city": city, "temp": c.get("temp_C"), "feels": c.get("FeelsLikeC"),
+            "humidity": c.get("humidity"), "desc": _weather_desc(c), "days": days}
+
+
+def weather_brief(w):
+    """给模型看的一句话天气：现在 + 今天 + 明天。"""
+    parts = [f"{w['city']}现在{w['temp']}°C（体感{w['feels']}°C），{w['desc']}，湿度{w['humidity']}%"]
+    for name, d in zip(("今天", "明天"), w["days"]):
+        parts.append(f"{name}{d['min']}~{d['max']}°C，白天{d['desc']}，降雨概率最高{d['rain']}%")
+    return "；".join(parts)
 
 
 def parse_action_reply(raw):
@@ -1041,26 +1112,33 @@ class PetWindow(QWidget):
         messages = [{"role": "system", "content": self._memory_prompt()}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_msg})
-        
+        deep = bool(self.cfg.get("deep_think", False))
+        if deep:
+            self.say("让我想想……")            # 深度思考要多等一会儿，先给个回应
+
         def worker():
+            # 问到天气：先在后台查实时天气，作为资料交给模型（不然模型只能编）。
+            # 资料紧挨着问题放：放在长长的系统提示末尾时，模型会跟着旧聊天记录里自己编过的天气走。
+            note = self._weather_context(user_msg)
+            if note:
+                messages[-1] = {"role": "user", "content": f"{user_msg}\n\n{note}"}
             url = "https://api.deepseek.com/v1/chat/completions"
             headers = {
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json"
             }
-            payload = {
-                "model": "deepseek-flash",
-                "messages": messages,
-                "max_tokens": 512,
-                "temperature": 0.9
-            }
+            payload = {"model": "deepseek-flash", "messages": messages}
+            payload.update(DS_CHAT_DEEP if deep else DS_CHAT_FAST)
             try:
-                resp = requests.post(url, json=payload, headers=headers, timeout=30)
+                resp = requests.post(url, json=payload, headers=headers, timeout=120 if deep else 45)
                 if resp.status_code == 200:
-                    raw = resp.json()["choices"][0]["message"]["content"].strip()
+                    choice = resp.json()["choices"][0]
+                    raw = (choice["message"].get("content") or "").strip()
                     reply, action = parse_action_reply(raw)
                     if not reply:
-                        reply = "（这次只想了想没说话……再问我一次？）"
+                        reply = ("（想得太入迷，话没说完……换个说法再问我一次？）"
+                                 if choice.get("finish_reason") == "length"
+                                 else "（这次只想了想没说话……再问我一次？）")
                     # 存入历史（保留完整回复，供上下文记忆）
                     self.chat_history.append({"role": "user", "content": user_msg})
                     self.chat_history.append({"role": "assistant", "content": reply})
@@ -1107,6 +1185,7 @@ class PetWindow(QWidget):
                     ],
                     "max_tokens": 80,
                     "temperature": 0.0,
+                    **DS_NO_THINKING,
                 },
                 timeout=30,
             )
@@ -1140,7 +1219,11 @@ class PetWindow(QWidget):
             pass
 
     def _memory_prompt(self):
-        parts = [DS_SYSTEM]
+        now = datetime.now()
+        parts = [DS_SYSTEM,
+                 # 模型自己不知道今天几号、星期几：每次都告诉它
+                 f"【实时信息】现在是 {now.year}年{now.month}月{now.day}日 星期{'一二三四五六日'[now.weekday()]} "
+                 f"{now:%H:%M}（主人电脑上的时间）；主人所在城市：{self.cfg.get('city', '汕头')}。"]
         facts = self.pet_memory.get("facts", [])
         if facts:
             parts.append("你记得这些关于主人和你们的事：\n" + "\n".join("- " + f for f in facts[-16:]))
@@ -1148,6 +1231,28 @@ class PetWindow(QWidget):
         if summary.strip():
             parts.append("之前聊过的摘要：\n" + summary.strip()[:600])
         return "\n\n".join(parts)
+
+    def _weather_context(self, user_msg):
+        """聊天问到天气时查一次实时天气交给模型（在后台线程里调用）。
+        10 分钟内查过就直接用；15 分钟内的追问（“那明天呢”）也带上，免得她又开始编。"""
+        city = self.cfg.get("city", "汕头")
+        cache = getattr(self, "_weather_cache", None)
+        age = time.time() - cache[0] if cache and cache[1] == city else None
+        if looks_like_weather_question(user_msg):
+            if age is None or age > 600:
+                try:
+                    cache = (time.time(), city, weather_brief(fetch_weather(city)))
+                    self._weather_cache = cache
+                except Exception as e:
+                    print("天气错误:", repr(e))
+                    return (f"【系统附言，主人看不到：刚才去查{city}的天气没查到（网络不通或天气服务没响应）。"
+                            "主人问天气就老实说这次没查到、等会儿再问，绝对不要编天气。】")
+        elif age is None or age > 900:
+            return None
+        return (f"【系统附言，主人看不到：刚从 wttr.in 查到的实时天气——{cache[2]}。"
+                "回答天气必须以这份资料为准；之前聊天里说过的天气如果对不上，以这里为准"
+                "（可以俏皮地承认刚才说错了）。"
+                f"如果主人问的是别的城市，就说你只查了{city}的，可以在右键菜单「设置」里改城市。】")
 
     def _remember_explicit(self, text):
         match = re.match(r"^\s*(?:请|你要)?记住[：:，,\s]*(.+)$", text)
@@ -1190,6 +1295,7 @@ class PetWindow(QWidget):
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 300,
                     "temperature": 0.2,
+                    **DS_NO_THINKING,
                 },
                 timeout=30,
             )
@@ -1594,7 +1700,8 @@ class PetWindow(QWidget):
                     {"role": "user", "content": prompt},
                 ],
                 "max_tokens": 256,
-                "temperature": 1.0,
+                "temperature": 1.3,          # 官方建议：通用对话 1.3
+                **DS_NO_THINKING,
             }
             resp = requests.post(
                 "https://api.deepseek.com/v1/chat/completions",
@@ -3555,19 +3662,12 @@ class PetWindow(QWidget):
                          daemon=True).start()
 
     def _weather_worker(self, city):
-        weather_map = {
-            "Sunny": "晴", "Clear": "晴", "Partly cloudy": "多云", "Cloudy": "阴",
-            "Overcast": "阴", "Mist": "有雾", "Fog": "有雾", "Patchy rain possible": "可能有小雨",
-            "Light rain": "小雨", "Light rain shower": "阵雨", "Moderate rain": "中雨",
-            "Heavy rain": "大雨", "Thundery outbreaks possible": "可能有雷阵雨",
-        }
         try:
-            r = requests.get(f"https://wttr.in/{city}?format=j1", timeout=10,
-                             headers={"User-Agent": "Mozilla/5.0"})
-            weather = r.json()["current_condition"][0]
-            raw = weather["weatherDesc"][0]["value"].strip()
-            desc = weather_map.get(raw, raw)
-            self._queue_say(f"天气：{city}现在{weather['temp_C']}°，{desc}")
+            w = fetch_weather(city)
+            self._weather_cache = (time.time(), city, weather_brief(w))   # 接着在聊天里问也有数据
+            today = w["days"][0] if w["days"] else None
+            extra = f"，今天{today['min']}~{today['max']}°" if today else ""
+            self._queue_say(f"天气：{city}现在{w['temp']}°，{w['desc']}{extra}")
         except Exception as e:
             print("天气错误:", repr(e))
             self._queue_say("天气获取失败，网络好像不太通")
@@ -3640,6 +3740,7 @@ class PetWindow(QWidget):
 
         st = m.addMenu("设置")
         check(st, "语音", self.cfg.get("voice_enabled", True), self.set_voice_enabled)
+        check(st, "聊天时深度思考（更准，但回得慢）", self.cfg.get("deep_think", False), self.set_deep_think)
         op_menu = st.addMenu("聊天框透明度")
         current_op = float(self.cfg.get("chat_opacity", 0.75))
         for label, value in [("20%", 0.2), ("40%", 0.4), ("60%", 0.6),
@@ -3667,6 +3768,10 @@ class PetWindow(QWidget):
     def _set_cfg_flag(self, key, on):
         self.cfg[key] = bool(on)
         self._save_config()
+
+    def set_deep_think(self, on):
+        self._set_cfg_flag("deep_think", on)
+        self.say("深度思考开啦：先想清楚再回答，要多等一会儿～" if on else "深度思考关了，回得快一点～")
 
     def _set_key_dialog(self):
         key, ok = QInputDialog.getText(
