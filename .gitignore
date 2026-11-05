@@ -4,6 +4,7 @@ chat_memory.json
 pet_memory.json
 pet_state.json
 *.json.tmp
+*.bad
 
 # 虚拟环境
 .venv/

@@ -376,23 +376,45 @@ class HotkeyFilter(QAbstractNativeEventFilter):
         return False, 0
 
 
+def _same_kind(value, default):
+    """手改配置写错了类型（比如 "size": "大"）时，这一项退回默认值，不让程序起不来。"""
+    if default is None:
+        return True                                    # 默认是 None 的（窗口坐标）不限制
+    if isinstance(default, (bool, int, float)):
+        return isinstance(value, (bool, int, float))   # 数字之间通用
+    return isinstance(value, type(default))
+
+
 def load_json(path, default):
+    """读配置 / 存档，数据有问题也尽量让程序正常起来：
+    - 文件不存在：写一份默认值（目录只读也不报错）
+    - 缺键（旧版本的配置、手改时删了一行）：缺的键用默认值补上，不再 KeyError 起不来
+    - 某一项类型写错：这一项用默认值
+    - 整个文件坏了：原文件改名为 .bad 留着（里面可能有 API Key），这次先用默认值
+    - 兼容带 BOM 的 UTF-8（老版本记事本保存的文件开头带 BOM，以前会被当成坏文件、设置全丢）"""
     if not os.path.exists(path):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(
-                default,
-                f,
-                ensure_ascii=False,
-                indent=4
-            )
+        write_json_atomic(path, default)
         return default
-
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    except Exception:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        if isinstance(default, dict) and not isinstance(data, dict):
+            raise ValueError("最外层不是 JSON 对象")
+    except Exception as ex:
+        try:
+            os.replace(path, path + ".bad")
+            print(f"{os.path.basename(path)} 读取失败（{ex}），已改名为 "
+                  f"{os.path.basename(path)}.bad 保留，先用默认设置", file=sys.stderr)
+        except OSError:
+            pass
         return default
+    if not isinstance(default, dict):
+        return data
+    merged = dict(default)
+    for key, value in data.items():
+        if key not in default or _same_kind(value, default[key]):
+            merged[key] = value
+    return merged
 
 
 class ChatDialog(QDialog):
