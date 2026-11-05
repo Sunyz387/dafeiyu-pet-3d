@@ -1,5 +1,7 @@
 # 大肥鱼桌宠 3D 版 🐋
 
+<p align="center"><img src="docs/preview.gif" alt="大肥鱼 3D 形象预览：眨眼、转身一整圈、眯眼笑着跳一下"></p>
+
 > 本仓库基于 [1190fasheqi/dafeiyu-pet](https://github.com/1190fasheqi/dafeiyu-pet)（MIT）修改。
 > 在原项目基础上新增：由三视图扩展的 **3D 形象**（会转身、眨眼、看鼠标、睡午觉）、灵动小动作、
 > **小游戏**（接小鱼干 / 丢球 / 捉迷藏 / 吹泡泡）与**舞蹈秀**，以及一轮省资源和稳定性优化。
@@ -141,6 +143,7 @@ pyinstaller --noconfirm 桌宠.spec
 | preprocess2.py | 精灵边缘去污 + 多尺寸生成脚本 |
 | sprites/ | 精灵图（正面/侧面/背面 各尺寸 + 图标） |
 | sprites3d/ | 3D 形象预渲染帧（转身 / 待机 / 走路 / 眨眼 / 睡觉）+ meta.json |
+| docs/preview.gif | README 顶部的预览动图（用桌宠自己的绘制代码离屏渲染） |
 | 启动桌宠.bat | 启动脚本（自动选择 venv 或系统 Python） |
 | requirements.txt | 依赖 |
 | 桌宠.spec | PyInstaller 打包配置（含新依赖收集） |
