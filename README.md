@@ -9,6 +9,14 @@ DeepSeek V4 Pro 二创形象「鲸鱼娘·大肥鱼」的透明桌面宠物。
 
 基于三视图素材（正面 / 侧面 / 背面），用 Python + PySide6 实现，无边框透明置顶窗口。
 
+## 下载即用（Windows）
+
+不想装 Python 的话，到 [Releases](https://github.com/Sunyz387/dafeiyu-pet-3d/releases/latest) 下载 `dafeiyu-pet-3d-…-windows-x64.zip`，解压到一个单独的文件夹，双击里面的 `大肥鱼桌宠.exe` 就行。
+
+- 第一次运行如果弹出「Windows 已保护你的电脑」：点「更多信息 → 仍要运行」（exe 没有数字签名，PyInstaller 打包的程序常被误报）
+- 配置、养成存档、聊天记录都存在 exe 所在的文件夹里；以后升级用新 exe 覆盖旧的就行，存档不丢
+- AI 对话要用你自己的 DeepSeek API Key：右键她 →「设置」→「设置 DeepSeek Key…」
+
 ## 功能
 
 - **三视图行走**：左右走用侧面（自动镜像）、向上走用背面、向下走用正面
@@ -99,7 +107,7 @@ python 桌宠.py
 
 ```bash
 pip install pyinstaller
-pyinstaller --noconfirm --onefile --windowed --name 大肥鱼桌宠 --add-data "sprites;sprites" --add-data "sprites3d;sprites3d" --icon icon.ico 桌宠.py
+pyinstaller --noconfirm 桌宠.spec
 ```
 
 产物在 `dist/大肥鱼桌宠.exe`，对方双击即用，无需安装 Python。

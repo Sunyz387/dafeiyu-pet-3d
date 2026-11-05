@@ -33,11 +33,11 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='桌宠',
+    name='大肥鱼桌宠',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,          # UPX 压缩的 exe 更容易被杀毒软件误报，也可能压坏 Qt 的 DLL
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
